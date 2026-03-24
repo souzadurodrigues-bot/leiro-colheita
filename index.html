@@ -2332,14 +2332,15 @@ function restoreMainContent(){
   updateStatus(true);
 }
 
+var _syncingCols={};
+
 async function syncCol(col){
   if(!DB_READY) return;
+  if(_syncingCols[col]) return; // evita duplo sync
+  _syncingCols[col]=true;
   try {
-    // Replace entire collection atomically
     var rows=DB[col].map(function(item){return{data:item};});
-    // Delete existing rows
     await supabase.from(col).delete().not('data','is',null);
-    // Insert updated rows
     if(rows.length>0){
       var ins=await supabase.from(col).insert(rows);
       if(ins.error) throw ins.error;
@@ -2348,6 +2349,9 @@ async function syncCol(col){
   } catch(e){
     console.error('Sync error for '+col+':',e);
     showToast('Erro ao salvar: '+e.message, 'error');
+  } finally {
+    // libera o guard após 3s (tempo suficiente para realtime não recarregar)
+    setTimeout(function(){ _syncingCols[col]=false; }, 3000);
   }
 }
 
@@ -2362,7 +2366,7 @@ function setupRealtime(){
       supabase.channel('changes-'+col)
         .on('postgres_changes',{event:'*',schema:'public',table:col},function(payload){
           if(!DB_READY) return;
-          // Only react to changes from OTHER clients (not our own writes)
+          if(_syncingCols[col]) return; // ignora nosso proprio save
           reloadCol(col);
         })
         .subscribe(function(status){
@@ -2375,9 +2379,12 @@ function setupRealtime(){
 
 var _reloadTimer={};
 async function reloadCol(col){
+  // ignora se estamos sincronizando esta coleção (nosso proprio save)
+  if(_syncingCols[col]) return;
   // debounce: ignore if same col was reloaded in last 1s
   clearTimeout(_reloadTimer[col]);
   _reloadTimer[col]=setTimeout(async function(){
+  if(_syncingCols[col]) return; // verifica novamente dentro do debounce
   try {
     var res=await supabase.from(col).select('data');
     if(res.error) throw res.error;
